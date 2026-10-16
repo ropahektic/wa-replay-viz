@@ -1,0 +1,278 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>WA Replay Viewer</title>
+<style>
+  :root {
+    --bg: #0b0c0f; --panel: rgba(16,18,22,.86); --line: #252a31; --text: #d7dbe1; --dim: #7a828e;
+    --land: #3b5a3c; --water: #1b3a57; --shot: #ffb347; --chute: #6fe3ff; --accent: #4fc3ff;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; background: var(--bg); color: var(--text); overflow: hidden;
+    font: 13px/1.4 ui-monospace, Consolas, monospace; }
+  canvas#cv { position: absolute; left: 50%; top: calc(50% - 26px); transform: translate(-50%, -50%); display: block; }
+  #bar { position: fixed; left: 0; right: 0; bottom: 0; height: 52px; display: flex; align-items: center; gap: 10px;
+    padding: 0 14px; background: var(--panel); border-top: 1px solid var(--line); }
+  #bar[hidden] { display: none; }
+  button, select { background: #15181d; color: var(--text); border: 1px solid var(--line); border-radius: 5px;
+    font: inherit; padding: 4px 9px; cursor: pointer; }
+  button:hover, select:hover { border-color: var(--dim); }
+  #play { width: 42px; font-size: 15px; }
+  #track { position: relative; flex: 1; height: 26px; display: flex; align-items: center; }
+  #seek { width: 100%; margin: 0; accent-color: var(--accent); position: relative; z-index: 1; background: transparent; }
+  #ticks { position: absolute; inset: 4px 0; pointer-events: none; }
+  #ticks i { position: absolute; top: 0; bottom: 0; width: 1px; background: #3a414b; }
+  #time { color: var(--dim); min-width: 120px; text-align: right; }
+  #drop { position: fixed; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center;
+    gap: 14px; color: var(--dim); text-align: center; padding: 16px; }
+  #drop b { color: var(--text); font-size: 20px; letter-spacing: .04em; }
+  #drop.over { background: rgba(79,195,255,.06); outline: 2px dashed var(--accent); outline-offset: -14px; }
+  #drop .open { font-size: 14px; padding: 8px 18px; color: var(--text); }
+  #drop small { max-width: 520px; }
+  #msg { color: #ff8a80; min-height: 1em; }
+  #file { display: none; }
+</style>
+</head>
+<body>
+<canvas id="cv" width="1920" height="696"></canvas>
+<div id="drop">
+  <b>WA REPLAY VIEWER</b>
+  <button class="open" id="openBig">Open a .watrace</button>
+  <small>or drop it here · a .watrace is made from a .WAgame replay with the wa-trace converter</small>
+  <div id="msg"></div>
+</div>
+<div id="bar" hidden>
+  <button id="open" title="open another replay">Open</button>
+  <button id="prev" title="previous turn (Shift+←)">⏮</button>
+  <button id="play" title="play / pause (Space)">▶</button>
+  <button id="next" title="next turn (Shift+→)">⏭</button>
+  <select id="speed" title="speed">
+    <option value="0.5">0.5×</option><option value="1" selected>1×</option><option value="2">2×</option>
+    <option value="4">4×</option><option value="8">8×</option><option value="16">16×</option>
+  </select>
+  <div id="track"><div id="ticks"></div><input id="seek" type="range" min="0" max="0" value="0" step="1"></div>
+  <span id="time">0:00</span>
+</div>
+<input id="file" type="file" accept=".watrace,.gz,.jsonl">
+<script>
+const $ = id => document.getElementById(id);
+const cv = $('cv'), ctx = cv.getContext('2d');
+const css = n => getComputedStyle(document.documentElement).getPropertyValue(n).trim();
+const C = { land: css('--land'), water: css('--water'), shot: css('--shot'), chute: css('--chute') };
+const TEAMS = ['#ff5d5d', '#4fc3ff', '#57d18c', '#f7d154', '#c78bff', '#ff9f43'];
+const teamColor = t => TEAMS[t % TEAMS.length];
+const FONT = 'ui-monospace, Consolas, monospace';
+const FRAME_MS = 20;   // WA: 50 frames a second
+
+// the replay: meta, the entity frames (every 2nd game frame), terrain changes, turns
+let R = null;
+let pos = 0, playing = false, last = 0, U = 1;
+
+// ---------------------------------------------------------------- loading
+async function load(file) {
+  $('msg').textContent = 'reading…';
+  try {
+    const head = new Uint8Array(await file.slice(0, 2).arrayBuffer());
+    let stream = file.stream();
+    if (head[0] === 0x1f && head[1] === 0x8b) stream = stream.pipeThrough(new DecompressionStream('gzip'));
+    const reader = stream.pipeThrough(new TextDecoderStream()).getReader();
+    const r = { meta: {}, frames: [], maps: [], turns: [] };
+    let rest = '';
+    const line = l => {
+      if (!l) return;
+      let m; try { m = JSON.parse(l); } catch (_) { return; }
+      if (m.type === 'ents') r.frames.push(m);
+      else if (m.type === 'map') r.maps.push(m);
+      else if (m.type === 'meta') r.meta = m;
+    };
+    try {
+      for (;;) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        const parts = (rest + value).split('\n'); rest = parts.pop();
+        for (const p of parts) line(p);
+      }
+    } catch (_) { /* a trace cut short: keep what was read */ }
+    line(rest);
+    if (!r.frames.length || !r.maps.length) throw new Error('no frames in this file');
+    // turns: the turn worm changes
+    let prev = null;
+    r.frames.forEach((f, i) => {
+      const w = f.worms.find(w => w[5]);
+      if (w && w[0] !== prev) { r.turns.push(i); prev = w[0]; }
+    });
+    if (!r.turns.length || r.turns[0] !== 0) r.turns.unshift(0);
+    R = r; pos = 0; playing = true; caches.clear();
+    $('drop').style.display = 'none'; $('bar').hidden = false;
+    $('seek').max = r.frames.length - 1;
+    $('ticks').innerHTML = r.turns.slice(1).map(i => `<i style="left:${(i / (r.frames.length - 1)) * 100}%"></i>`).join('');
+    document.title = (r.meta.name || file.name) + ' · WA Replay Viewer';
+    $('msg').textContent = '';
+  } catch (e) {
+    $('msg').textContent = 'could not read it: ' + e.message;
+    $('drop').style.display = 'flex';
+  }
+}
+
+// terrain canvases, built when first shown
+const caches = new Map();
+function terrainAt(t) {
+  let lo = 0, hi = R.maps.length - 1, k = 0;
+  while (lo <= hi) { const m = (lo + hi) >> 1; if (R.maps[m].t <= t) { k = m; lo = m + 1; } else hi = m - 1; }
+  if (!caches.has(k)) caches.set(k, terrain(R.maps[k]));
+  return R.maps[k];
+}
+function terrain(m) {
+  const c = document.createElement('canvas'); c.width = m.w; c.height = m.h;
+  const g = c.getContext('2d'), img = g.createImageData(m.cw, m.ch), raw = atob(m.map);
+  const [r, gr, b] = [1, 3, 5].map(i => parseInt(C.land.slice(i, i + 2), 16));
+  for (let i = 0; i < m.cw * m.ch; i++) {
+    if (raw.charCodeAt(i >> 3) >> (i & 7) & 1) { const o = i * 4; img.data[o] = r; img.data[o+1] = gr; img.data[o+2] = b; img.data[o+3] = 255; }
+  }
+  const t = document.createElement('canvas'); t.width = m.cw; t.height = m.ch; t.getContext('2d').putImageData(img, 0, 0);
+  g.imageSmoothingEnabled = false; g.drawImage(t, 0, 0, m.w, m.h);
+  return c;
+}
+
+// ---------------------------------------------------------------- drawing
+function fit(w, h) {
+  if (cv.width !== w || cv.height !== h) { cv.width = w; cv.height = h; }
+  const k = Math.min(innerWidth / w, (innerHeight - 52) / h);
+  cv.style.width = Math.floor(w * k) + 'px'; cv.style.height = Math.floor(h * k) + 'px';
+  U = Math.max(1, 1 / k);
+}
+const S = () => Math.max(1, U * 0.7);
+function dot(x, y, r, c, ring) {
+  ctx.beginPath(); ctx.arc(x, y, r * S(), 0, 7);
+  if (ring) { ctx.strokeStyle = c; ctx.lineWidth = 2 * S(); ctx.stroke(); } else { ctx.fillStyle = c; ctx.fill(); }
+}
+function turnOf(i) { let k = 0; for (let j = 0; j < R.turns.length && R.turns[j] <= i; j++) k = j; return k; }
+
+function draw() {
+  const i = Math.min(R.frames.length - 1, Math.floor(pos)), f = R.frames[i];
+  const m = terrainAt(f.t);
+  fit(m.w, m.h);
+  ctx.clearRect(0, 0, cv.width, cv.height);
+  ctx.fillStyle = C.water; ctx.fillRect(0, m.water, m.w, m.h - m.water);
+  ctx.drawImage(caches.get(R.maps.indexOf(m)), 0, 0);
+  const s = S();
+  for (const [x, y] of f.mines) dot(x, y, 5, '#d33', true);
+  for (const [x, y] of f.drums) { ctx.fillStyle = '#c97a2b'; ctx.fillRect(x - 8 * s, y - 12 * s, 16 * s, 22 * s); }
+  for (const [x, y] of f.crates) { ctx.strokeStyle = '#e6c84f'; ctx.lineWidth = 2 * s; ctx.strokeRect(x - 10 * s, y - 18 * s, 20 * s, 24 * s); }
+  ctx.lineCap = 'round'; ctx.lineJoin = 'round';
+  // the turn worm's path this turn
+  const me = f.worms.find(w => w[5]);
+  const t0 = R.turns[turnOf(i)];
+  if (me) {
+    ctx.strokeStyle = '#ffffff55'; ctx.lineWidth = 3 * s; ctx.beginPath();
+    let started = false;
+    for (let j = t0; j <= i; j++) {
+      const w = R.frames[j].worms.find(w => w[0] === me[0]); if (!w) continue;
+      if (!started) { ctx.moveTo(w[1], w[2]); started = true; } else ctx.lineTo(w[1], w[2]);
+    }
+    ctx.stroke();
+  }
+  // projectiles: a short trail behind each
+  ctx.setLineDash([2 * s, 5 * s]);
+  for (const p of f.proj) {
+    ctx.strokeStyle = C.shot + 'aa'; ctx.lineWidth = 2 * s; ctx.beginPath(); ctx.moveTo(p[1], p[2]);
+    for (let j = i - 1; j >= Math.max(0, i - 75); j--) {
+      const q = R.frames[j].proj.find(q => q[0] === p[0]); if (!q) break; ctx.lineTo(q[1], q[2]);
+    }
+    ctx.stroke();
+  }
+  ctx.setLineDash([]);
+  if (f.rope.length > 1) {
+    ctx.strokeStyle = '#e8d9a8'; ctx.lineWidth = 2 * s; ctx.beginPath(); ctx.moveTo(f.rope[0][0], f.rope[0][1]);
+    for (const p of f.rope) ctx.lineTo(p[0], p[1]); ctx.stroke();
+    dot(f.rope[0][0], f.rope[0][1], 4, '#e8d9a8');
+  }
+  ctx.font = `bold ${11 * s}px ${FONT}`; ctx.textAlign = 'center';
+  for (const [, x, y, team, st, on, hp] of f.worms) {
+    if (st === 0x7D) canopy(x, y);
+    dot(x, y, on ? 11 : 9, teamColor(team));
+    if (on) { ctx.strokeStyle = '#fff'; ctx.lineWidth = 2.5 * s; ctx.beginPath(); ctx.arc(x, y, 16 * s, 0, 7); ctx.stroke(); }
+    if (hp != null) {
+      const h = hp > 100000 ? hp >> 16 : hp;
+      ctx.fillStyle = teamColor(team); ctx.fillText(h, x, y - (on ? 22 : 15) * s);
+    }
+  }
+  for (const [, x, y] of f.proj) { dot(x, y, 6, C.shot); dot(x, y, 10, C.shot + '55', true); }
+  hud(f, i);
+  // the bar
+  $('seek').value = i;
+  $('time').textContent = `${clock(f.t)} / ${clock(R.frames[R.frames.length - 1].t)}`;
+  $('play').textContent = playing ? '⏸' : '▶';
+}
+function canopy(x, y) {
+  const s = S();
+  ctx.save(); ctx.translate(x, y); ctx.scale(s, s);
+  ctx.strokeStyle = C.chute; ctx.fillStyle = C.chute + '55'; ctx.lineWidth = 2;
+  ctx.beginPath(); ctx.arc(0, -26, 18, Math.PI, 0); ctx.closePath(); ctx.fill(); ctx.stroke();
+  ctx.beginPath(); ctx.moveTo(-18, -26); ctx.lineTo(0, -6); ctx.lineTo(18, -26); ctx.stroke();
+  ctx.restore();
+}
+const clock = t => { const s = Math.floor(t / 50); return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`; };
+
+// top-left: the replay's name, the turn, the wind
+function hud(f, i) {
+  ctx.save(); ctx.scale(U * 0.9, U * 0.9);
+  const name = R.meta.name || '';
+  ctx.font = `bold 15px ${FONT}`;
+  const w = Math.max(240, ctx.measureText(name).width + 24);
+  ctx.fillStyle = 'rgba(14,16,19,0.72)'; ctx.beginPath(); ctx.roundRect(8, 8, w, 52, 8); ctx.fill();
+  ctx.fillStyle = '#e6e9ee'; ctx.textAlign = 'left'; ctx.fillText(name, 18, 29);
+  ctx.font = `14px ${FONT}`; ctx.fillStyle = '#9aa3af';
+  ctx.fillText(`turn ${turnOf(i) + 1} / ${R.turns.length}`, 18, 50);
+  const wx = 190, wy = 45, L = Math.abs(f.wind) * 70, d = Math.sign(f.wind);
+  ctx.strokeStyle = C.chute; ctx.fillStyle = C.chute; ctx.lineWidth = 3;
+  ctx.beginPath(); ctx.moveTo(wx - L / 2 * d, wy); ctx.lineTo(wx + L / 2 * d, wy); ctx.stroke();
+  if (d) { ctx.beginPath(); ctx.moveTo(wx + L / 2 * d + 8 * d, wy); ctx.lineTo(wx + L / 2 * d, wy - 6); ctx.lineTo(wx + L / 2 * d, wy + 6); ctx.fill(); }
+  ctx.restore();
+}
+
+// ---------------------------------------------------------------- playback
+function loop(now) {
+  if (R) {
+    if (playing) {
+      pos += (now - last) / (FRAME_MS * 2) * +$('speed').value;   // a trace frame = 2 game frames
+      if (pos >= R.frames.length - 1) { pos = R.frames.length - 1; playing = false; }
+    }
+    draw();
+  }
+  last = now;
+  requestAnimationFrame(loop);
+}
+function jumpTurn(d) {
+  const k = Math.max(0, Math.min(R.turns.length - 1, turnOf(Math.floor(pos)) + d));
+  pos = R.turns[k];
+}
+function step(frames) { pos = Math.max(0, Math.min(R.frames.length - 1, Math.floor(pos) + frames)); }
+
+$('play').onclick = () => { if (pos >= R.frames.length - 1) pos = 0; playing = !playing; };
+$('prev').onclick = () => jumpTurn(-1);
+$('next').onclick = () => jumpTurn(1);
+$('seek').oninput = e => { pos = +e.target.value; };
+$('open').onclick = $('openBig').onclick = () => $('file').click();
+$('file').onchange = e => { if (e.target.files[0]) load(e.target.files[0]); e.target.value = ''; };
+addEventListener('keydown', e => {
+  if (!R || e.target.tagName === 'SELECT') return;
+  if (e.code === 'Space') { e.preventDefault(); $('play').click(); }
+  else if (e.code === 'ArrowLeft') e.shiftKey ? jumpTurn(-1) : step(-25);
+  else if (e.code === 'ArrowRight') e.shiftKey ? jumpTurn(1) : step(25);
+  else if (e.code === 'Home') pos = 0;
+  else if (e.code === 'End') pos = R.frames.length - 1;
+});
+// drag and drop anywhere
+addEventListener('dragover', e => { e.preventDefault(); $('drop').classList.add('over'); $('drop').style.display = 'flex'; });
+addEventListener('dragleave', e => { if (e.target === $('drop')) { $('drop').classList.remove('over'); if (R) $('drop').style.display = 'none'; } });
+addEventListener('drop', e => {
+  e.preventDefault(); $('drop').classList.remove('over');
+  const f = e.dataTransfer.files[0]; if (f) load(f); else if (R) $('drop').style.display = 'none';
+});
+requestAnimationFrame(loop);
+</script>
+</body>
+</html>
