@@ -115,7 +115,8 @@ async function load(file) {
     const byT = new Map(r.frames.map((f, k) => [f.t, k]));
     for (const pr of r.preds) {
       pr.end = pr.t + pr.pts.length - 1; pr.diverge = null;
-      for (let k = 0; k < pr.pts.length; k++) {
+      // a path into the water: compared up to the frame before (WA slows it on entry)
+      for (let k = 0; k < pr.pts.length - (pr.water ? 1 : 0); k++) {
         const fi = byT.get(pr.t + k); if (fi == null) continue;
         const a = r.frames[fi].proj.find(q => q[0] === pr.id); if (!a) break;
         if (a[1] !== pr.pts[k][0] || a[2] !== pr.pts[k][1]) { pr.diverge = { k, wa: [a[1], a[2]], model: pr.pts[k] }; break; }
@@ -253,6 +254,12 @@ function model(f, i) {
     ctx.beginPath(); ctx.moveTo(pr.pts[0][0], pr.pts[0][1]);
     for (const p of pr.pts) ctx.lineTo(p[0], p[1]);
     ctx.stroke();
+    if (pr.water && !pr.diverge && f.t >= pr.end - 1) {
+      const [x, y] = pr.pts[pr.pts.length - 1];
+      ctx.setLineDash([]); ctx.strokeStyle = '#7fc8ff'; ctx.lineWidth = 2 * s;
+      for (const rr of [5, 10]) { ctx.beginPath(); ctx.ellipse(x, y, rr * s, rr * s / 3, 0, 0, 7); ctx.stroke(); }
+      ctx.setLineDash([4 * s, 4 * s]); ctx.lineWidth = 1.5 * s;
+    }
     if (pr.diverge && f.t >= pr.t + pr.diverge.k) {
       const [x, y] = pr.diverge.wa, r = 6 * s;
       ctx.setLineDash([]); ctx.strokeStyle = '#ff4d4d'; ctx.lineWidth = 2.5 * s;
@@ -277,7 +284,7 @@ function modelHud(f, fc) {
   if (fc) lines.push({ text: `fire model: ${fc.n - fc.bad.length}/${fc.n} exact`, bad: fc.bad.length > 0 });
   for (const pr of live) {
     const k = KINDS[(R.frames.find(fr => fr.t >= pr.t)?.proj.find(q => q[0] === pr.id) || [])[4]];
-    lines.push({ text: `${k ? k[0] : 'projectile'}: ${pr.diverge ? 'model off after ' + pr.diverge.k + ' frames' : 'model exact'}`, bad: !!pr.diverge });
+    lines.push({ text: `${k ? k[0] : 'projectile'}: ${pr.diverge ? 'model off after ' + pr.diverge.k + ' frames' : pr.water ? 'model exact to the water' : 'model exact'}`, bad: !!pr.diverge });
   }
   if (!lines.length) return;
   ctx.save(); ctx.scale(U * 0.9, U * 0.9);
