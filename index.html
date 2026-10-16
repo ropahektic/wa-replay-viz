@@ -204,13 +204,77 @@ function draw() {
       ctx.fillStyle = teamColor(team); ctx.fillText(h, x, y - (on ? 22 : 15) * s);
     }
   }
-  for (const [, x, y] of f.proj) { dot(x, y, 6, C.shot); dot(x, y, 10, C.shot + '55', true); }
+  // fires: size and glow by strength; drum fire amber, petrol red
+  for (const [, x, y, st, petrol] of (f.fires || [])) {
+    const k = st / 65535, flick = 0.85 + 0.15 * Math.sin(performance.now() / 70 + x * 1.7);
+    ctx.fillStyle = (petrol ? '#ff4a1c' : '#ffa22e') + hx(90 + 140 * k);
+    ctx.beginPath(); ctx.arc(x, y, (2 + 4 * k) * flick * s, 0, 7); ctx.fill();
+    ctx.fillStyle = '#ffe9a8' + hx(120 + 120 * k);
+    ctx.beginPath(); ctx.arc(x, y, (1 + 1.5 * k) * s, 0, 7); ctx.fill();
+  }
+  // projectiles by kind (the rendered sprite: cluster pieces differ from their shell)
+  const seen = new Set();
+  for (const q of f.proj) {
+    const [, x, y] = q, kind = KINDS[q[4]] || KINDS[q[3]] || ['projectile', C.shot, 'dot', 6];
+    seen.add(kind[0]);
+    shape(x, y, kind, q, i);
+  }
+  if (f.fires && f.fires.length) seen.add(`fire ×${f.fires.length}`);
+  legend([...seen]);
   hud(f, i);
   // the bar
   $('seek').value = i;
   $('time').textContent = `${clock(f.t)} / ${clock(R.frames[R.frames.length - 1].t)}`;
   $('play').textContent = playing ? '⏸' : '▶';
 }
+// rendered sprite id -> [name, colour, shape, size]
+const KINDS = {
+  48: ['bazooka', '#ffb347', 'rocket', 7], 59: ['homing missile', '#ff6b6b', 'rocket', 7], 49: ['magic bullet', '#c78bff', 'rocket', 6],
+  175: ['homing pigeon', '#e0e0e0', 'bird', 7], 52: ['mortar', '#d9a066', 'dot', 6], 53: ['cluster bomb', '#9ad06b', 'dot', 6],
+  54: ['cluster piece', '#c8f08f', 'dot', 3.5], 51: ['banana', '#ffe14d', 'banana', 6], 50: ['grenade', '#5ecf5e', 'dot', 5.5],
+  56: ['holy grenade', '#ffd700', 'cross', 7], 55: ['petrol bomb', '#ff7a45', 'bottle', 6], 78: ['dynamite', '#ff4040', 'stick', 6],
+  65: ['sheep launcher', '#f0f0f0', 'dot', 6], 152: ['sheep (launched)', '#ffffff', 'sheep', 7], 153: ['sheep', '#ffffff', 'sheep', 7],
+  166: ['mole bomb', '#a0785a', 'dot', 6], 163: ['salvation army', '#ff8080', 'dot', 6], 57: ['salvation piece', '#ffb0b0', 'dot', 3.5],
+  173: ['skunk', '#8fd18f', 'sheep', 6], 74: ['ming vase', '#7fb3ff', 'dot', 7], 75: ['vase shard', '#b3d1ff', 'dot', 3.5],
+  164: ['mad cow', '#d8c8b0', 'sheep', 8], 162: ['old woman', '#d0a0ff', 'sheep', 7],
+};
+const hx = v => Math.round(Math.max(0, Math.min(255, v))).toString(16).padStart(2, '0');
+function shape(x, y, [name, col, form, size], q, i) {
+  const s = S(), r = size * s;
+  // heading from the previous frame (rockets / bottles point where they fly)
+  let a = 0;
+  const p = i > 0 && R.frames[i - 1].proj.find(o => o[0] === q[0]);
+  if (p && (p[1] !== x || p[2] !== y)) a = Math.atan2(y - p[2], x - p[1]);
+  ctx.save(); ctx.translate(x, y); ctx.fillStyle = col; ctx.strokeStyle = col; ctx.lineWidth = 2 * s;
+  if (form === 'rocket' || form === 'bottle' || form === 'stick') {
+    ctx.rotate(a); ctx.fillRect(-r, -r * 0.4, r * 2, r * 0.8);
+    if (form === 'rocket') { ctx.beginPath(); ctx.moveTo(r, -r * 0.4); ctx.lineTo(r * 1.6, 0); ctx.lineTo(r, r * 0.4); ctx.fill(); }
+  } else if (form === 'banana') {
+    ctx.beginPath(); ctx.arc(0, 0, r, 0.3, Math.PI - 0.3); ctx.stroke();
+  } else if (form === 'cross') {
+    ctx.beginPath(); ctx.arc(0, 0, r, 0, 7); ctx.fill(); ctx.strokeStyle = '#7a5a00';
+    ctx.beginPath(); ctx.moveTo(0, -r * 0.7); ctx.lineTo(0, r * 0.7); ctx.moveTo(-r * 0.5, -r * 0.2); ctx.lineTo(r * 0.5, -r * 0.2); ctx.stroke();
+  } else if (form === 'sheep' || form === 'bird') {
+    ctx.beginPath(); ctx.ellipse(0, 0, r, r * 0.7, 0, 0, 7); ctx.fill();
+    ctx.fillStyle = '#333'; ctx.beginPath(); ctx.arc(r * 0.7 * (Math.cos(a) >= 0 ? 1 : -1), -r * 0.3, r * 0.35, 0, 7); ctx.fill();
+  } else {
+    ctx.beginPath(); ctx.arc(0, 0, r, 0, 7); ctx.fill();
+  }
+  ctx.restore();
+}
+// top-right: what is on screen this frame
+function legend(names) {
+  if (!names.length) return;
+  ctx.save(); ctx.scale(U * 0.9, U * 0.9);
+  const W = cv.width / (U * 0.9);
+  ctx.font = `13px ${FONT}`;
+  const w = Math.max(...names.map(n => ctx.measureText(n).width)) + 20, h = names.length * 18 + 10;
+  ctx.fillStyle = 'rgba(14,16,19,0.72)'; ctx.beginPath(); ctx.roundRect(W - w - 8, 8, w, h, 8); ctx.fill();
+  ctx.fillStyle = '#c9ced6'; ctx.textAlign = 'left';
+  names.forEach((n, k) => ctx.fillText(n, W - w + 2, 26 + k * 18));
+  ctx.restore();
+}
+
 function canopy(x, y) {
   const s = S();
   ctx.save(); ctx.translate(x, y); ctx.scale(s, s);
