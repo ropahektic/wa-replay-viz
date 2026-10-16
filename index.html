@@ -83,7 +83,7 @@ async function load(file) {
     let stream = file.stream();
     if (head[0] === 0x1f && head[1] === 0x8b) stream = stream.pipeThrough(new DecompressionStream('gzip'));
     const reader = stream.pipeThrough(new TextDecoderStream()).getReader();
-    const r = { meta: {}, frames: [], maps: [], turns: [], preds: [], fchecks: new Map(), shots: [], hits: [] };
+    const r = { meta: {}, frames: [], maps: [], turns: [], preds: [], fchecks: new Map(), shots: [], hits: [], balls: new Map() };
     let rest = '';
     const line = l => {
       if (!l) return;
@@ -95,6 +95,7 @@ async function load(file) {
       else if (m.type === 'fcheck') r.fchecks.set(m.t, m);
       else if (m.type === 'shot') r.shots.push(m);
       else if (m.type === 'hit') r.hits.push(m);
+      else if (m.type === 'ball') r.balls.set(m.id + ':' + m.t, m);
     };
     try {
       for (;;) {
@@ -119,6 +120,11 @@ async function load(file) {
       pr.end = pr.t + pr.pts.length - 1; pr.diverge = null;
       // a path into the water: compared up to the frame before (WA slows it on entry)
       for (let k = 0; k < pr.pts.length - (pr.water ? 1 : 0); k++) {
+        if (pr.ball) {   // logged every frame; it ends early on a worm (the path is terrain only)
+          const b = r.balls.get(pr.id + ':' + (pr.t + k)); if (!b) break;
+          if (b.x !== pr.pts[k][0] || b.y !== pr.pts[k][1]) { pr.diverge = { k, wa: [b.x, b.y], model: pr.pts[k] }; break; }
+          continue;
+        }
         const fi = byT.get(pr.t + k); if (fi == null) continue;
         const a = r.frames[fi].proj.find(q => q[0] === pr.id); if (!a) break;
         if (a[1] !== pr.pts[k][0] || a[2] !== pr.pts[k][1]) { pr.diverge = { k, wa: [a[1], a[2]], model: pr.pts[k] }; break; }
@@ -236,6 +242,15 @@ function draw() {
   }
   if (f.fires && f.fires.length) seen.add(`fire ×${f.fires.length}`);
   for (const n of strikes(f)) seen.add(n);
+  // Dragon Ball fireballs (logged every frame; the ents every 2nd)
+  for (const t of [f.t, f.t + 1]) for (const pr of R.preds) {
+    if (!pr.ball) continue;
+    const b = R.balls.get(pr.id + ':' + t); if (!b) continue;
+    const s = S(), g = ctx.createRadialGradient(b.x, b.y, 0, b.x, b.y, 9 * s);
+    g.addColorStop(0, '#fff6c8'); g.addColorStop(0.4, '#ffb02e'); g.addColorStop(1, 'rgba(255,90,20,0)');
+    ctx.fillStyle = g; ctx.beginPath(); ctx.arc(b.x, b.y, 9 * s, 0, 7); ctx.fill();
+    seen.add('dragon ball'); break;
+  }
   legend([...seen]);
   if (showModel) model(f, i);
   hud(f, i);
@@ -298,6 +313,12 @@ function model(f, i) {
     ctx.beginPath(); ctx.moveTo(pr.pts[0][0], pr.pts[0][1]);
     for (const p of pr.pts) ctx.lineTo(p[0], p[1]);
     ctx.stroke();
+    if (pr.target) {   // the homing target the worm picked
+      const [x, y] = pr.target, r = 9 * s;
+      ctx.setLineDash([]); ctx.strokeStyle = '#ff6b6b'; ctx.lineWidth = 2 * s;
+      ctx.beginPath(); ctx.arc(x, y, r, 0, 7); ctx.moveTo(x - r * 1.6, y); ctx.lineTo(x + r * 1.6, y); ctx.moveTo(x, y - r * 1.6); ctx.lineTo(x, y + r * 1.6); ctx.stroke();
+      ctx.setLineDash([4 * s, 4 * s]); ctx.lineWidth = 1.5 * s;
+    }
     if (pr.water && !pr.diverge && f.t >= pr.end - 1) {
       const [x, y] = pr.pts[pr.pts.length - 1];
       ctx.setLineDash([]); ctx.strokeStyle = '#7fc8ff'; ctx.lineWidth = 2 * s;
@@ -327,7 +348,7 @@ function modelHud(f, fc) {
   const lines = [];
   if (fc) lines.push({ text: `fire model: ${fc.n - fc.bad.length}/${fc.n} exact`, bad: fc.bad.length > 0 });
   for (const pr of live) {
-    const k = KINDS[(R.frames.find(fr => fr.t >= pr.t)?.proj.find(q => q[0] === pr.id) || [])[4]];
+    const k = pr.ball ? ['dragon ball'] : KINDS[(R.frames.find(fr => fr.t >= pr.t)?.proj.find(q => q[0] === pr.id) || [])[4]];
     lines.push({ text: `${k ? k[0] : 'projectile'}: ${pr.diverge ? 'model off after ' + pr.diverge.k + ' frames' : pr.water ? 'model exact to the water' : 'model exact'}`, bad: !!pr.diverge });
   }
   if (!lines.length) return;
