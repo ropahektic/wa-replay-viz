@@ -83,7 +83,7 @@ async function load(file) {
     let stream = file.stream();
     if (head[0] === 0x1f && head[1] === 0x8b) stream = stream.pipeThrough(new DecompressionStream('gzip'));
     const reader = stream.pipeThrough(new TextDecoderStream()).getReader();
-    const r = { meta: {}, frames: [], maps: [], turns: [], preds: [], fchecks: new Map() };
+    const r = { meta: {}, frames: [], maps: [], turns: [], preds: [], fchecks: new Map(), shots: [], hits: [] };
     let rest = '';
     const line = l => {
       if (!l) return;
@@ -93,6 +93,8 @@ async function load(file) {
       else if (m.type === 'meta') r.meta = m;
       else if (m.type === 'pred') r.preds.push(m);
       else if (m.type === 'fcheck') r.fchecks.set(m.t, m);
+      else if (m.type === 'shot') r.shots.push(m);
+      else if (m.type === 'hit') r.hits.push(m);
     };
     try {
       for (;;) {
@@ -233,6 +235,7 @@ function draw() {
     shape(x, y, kind, q, i);
   }
   if (f.fires && f.fires.length) seen.add(`fire ×${f.fires.length}`);
+  for (const n of strikes(f)) seen.add(n);
   legend([...seen]);
   if (showModel) model(f, i);
   hud(f, i);
@@ -241,6 +244,47 @@ function draw() {
   $('time').textContent = `${clock(f.t)} / ${clock(R.frames[R.frames.length - 1].t)}`;
   $('play').textContent = playing ? '⏸' : '▶';
 }
+// guns and melee (no game objects): each shot as a tracer from the muzzle to where it struck
+// (the hit in the same frame) or on to the map edge; each hit box as a flash, with the push
+const WEAPONS = { 11: 'shotgun', 12: 'handgun', 13: 'uzi', 14: 'minigun', 16: 'fire punch', 17: 'dragon ball', 35: 'baseball bat',
+  9: 'battle axe', 20: 'prod', 32: 'blowtorch', 33: 'drill', 18: 'kamikaze', 19: 'suicide bomber' };
+const FX = 65536;
+function strikes(f) {
+  const s = S(), names = new Set(), age = t => (f.t - t) / 30;
+  for (const sh of R.shots) {
+    if (sh.t > f.t || f.t - sh.t > 30) continue;
+    const a = 1 - age(sh.t), x0 = sh.x / FX, y0 = sh.y / FX;
+    const hit = R.hits.find(h => h.t === sh.t && h.by === sh.worm && h.kind === 3);
+    let x1, y1;
+    if (hit) { x1 = hit.x / FX; y1 = hit.y / FX; }
+    else {   // to the map edge along the aim
+      const dx = sh.dx / FX, dy = sh.dy / FX, W = cv.width, H = cv.height;
+      let k = 4000;
+      if (dx) k = Math.min(k, dx > 0 ? (W - x0) / dx : -x0 / dx);
+      if (dy) k = Math.min(k, dy > 0 ? (H - y0) / dy : -y0 / dy);
+      x1 = x0 + dx * k; y1 = y0 + dy * k;
+    }
+    ctx.strokeStyle = `rgba(255,236,150,${0.9 * a})`; ctx.lineWidth = 2 * s;
+    ctx.beginPath(); ctx.moveTo(x0, y0); ctx.lineTo(x1, y1); ctx.stroke();
+    ctx.fillStyle = `rgba(255,255,220,${a})`; ctx.beginPath(); ctx.arc(x0, y0, 4 * s * a, 0, 7); ctx.fill();
+    names.add(`${WEAPONS[sh.weapon] || 'gun'} shot`);
+  }
+  for (const h of R.hits) {
+    if (h.t > f.t || f.t - h.t > 20) continue;
+    const a = 1 - (f.t - h.t) / 20, x = h.x / FX, y = h.y / FX, w = h.w / FX, hh = h.h / FX;
+    const tool = h.weapon === 32 || h.weapon === 33;
+    ctx.strokeStyle = h.hit ? `rgba(255,90,90,${a})` : `rgba(255,200,120,${(tool ? 0.25 : 0.6) * a})`;
+    ctx.lineWidth = (h.hit ? 2.5 : 1.5) * s;
+    ctx.strokeRect(x - w, y - hh, w * 2, hh * 2);
+    if (h.hit) {   // the push
+      const px = h.px / FX * 6, py = h.py / FX * 6;
+      ctx.beginPath(); ctx.moveTo(x, y); ctx.lineTo(x + px, y + py); ctx.stroke();
+    }
+    names.add(`${WEAPONS[h.weapon] || 'impact'}${h.hit ? ' hit' : ''}`);
+  }
+  return names;
+}
+
 // the model layer (M): predicted projectile paths (dashed) with the first frame they leave
 // WA's (red cross), and the fires our fire model got wrong this frame (red rings)
 let showModel = true;
