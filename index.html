@@ -83,7 +83,7 @@ async function load(file) {
     let stream = file.stream();
     if (head[0] === 0x1f && head[1] === 0x8b) stream = stream.pipeThrough(new DecompressionStream('gzip'));
     const reader = stream.pipeThrough(new TextDecoderStream()).getReader();
-    const r = { meta: {}, frames: [], maps: [], turns: [] };
+    const r = { meta: {}, frames: [], maps: [], turns: [], preds: [], fchecks: new Map() };
     let rest = '';
     const line = l => {
       if (!l) return;
@@ -91,6 +91,8 @@ async function load(file) {
       if (m.type === 'ents') r.frames.push(m);
       else if (m.type === 'map') r.maps.push(m);
       else if (m.type === 'meta') r.meta = m;
+      else if (m.type === 'pred') r.preds.push(m);
+      else if (m.type === 'fcheck') r.fchecks.set(m.t, m);
     };
     try {
       for (;;) {
@@ -109,6 +111,16 @@ async function load(file) {
       if (w && w[0] !== prev) { r.turns.push(i); prev = w[0]; }
     });
     if (!r.turns.length || r.turns[0] !== 0) r.turns.unshift(0);
+    // the model layer: where each predicted path first leaves the real one
+    const byT = new Map(r.frames.map((f, k) => [f.t, k]));
+    for (const pr of r.preds) {
+      pr.end = pr.t + pr.pts.length - 1; pr.diverge = null;
+      for (let k = 0; k < pr.pts.length; k++) {
+        const fi = byT.get(pr.t + k); if (fi == null) continue;
+        const a = r.frames[fi].proj.find(q => q[0] === pr.id); if (!a) break;
+        if (a[1] !== pr.pts[k][0] || a[2] !== pr.pts[k][1]) { pr.diverge = { k, wa: [a[1], a[2]], model: pr.pts[k] }; break; }
+      }
+    }
     R = r; pos = 0; playing = true; caches.clear();
     $('drop').style.display = 'none'; $('bar').hidden = false;
     $('seek').max = r.frames.length - 1;
@@ -221,12 +233,62 @@ function draw() {
   }
   if (f.fires && f.fires.length) seen.add(`fire ×${f.fires.length}`);
   legend([...seen]);
+  if (showModel) model(f, i);
   hud(f, i);
   // the bar
   $('seek').value = i;
   $('time').textContent = `${clock(f.t)} / ${clock(R.frames[R.frames.length - 1].t)}`;
   $('play').textContent = playing ? '⏸' : '▶';
 }
+// the model layer (M): predicted projectile paths (dashed) with the first frame they leave
+// WA's (red cross), and the fires our fire model got wrong this frame (red rings)
+let showModel = true;
+function model(f, i) {
+  const s = S();
+  ctx.lineWidth = 1.5 * s; ctx.setLineDash([4 * s, 4 * s]);
+  for (const pr of R.preds) {
+    if (pr.t > f.t || f.t > pr.end + 100) continue;
+    const ok = !pr.diverge;
+    ctx.strokeStyle = ok ? 'rgba(111,227,255,0.55)' : 'rgba(255,120,120,0.6)';
+    ctx.beginPath(); ctx.moveTo(pr.pts[0][0], pr.pts[0][1]);
+    for (const p of pr.pts) ctx.lineTo(p[0], p[1]);
+    ctx.stroke();
+    if (pr.diverge && f.t >= pr.t + pr.diverge.k) {
+      const [x, y] = pr.diverge.wa, r = 6 * s;
+      ctx.setLineDash([]); ctx.strokeStyle = '#ff4d4d'; ctx.lineWidth = 2.5 * s;
+      ctx.beginPath(); ctx.moveTo(x - r, y - r); ctx.lineTo(x + r, y + r); ctx.moveTo(x + r, y - r); ctx.lineTo(x - r, y + r); ctx.stroke();
+      ctx.setLineDash([4 * s, 4 * s]); ctx.lineWidth = 1.5 * s;
+    }
+  }
+  ctx.setLineDash([]);
+  // fire checks: this frame or the previous one (the trace keeps every 2nd frame)
+  const fc = R.fchecks.get(f.t) || R.fchecks.get(f.t - 1);
+  if (fc) {
+    for (const b of fc.bad) {
+      ctx.strokeStyle = '#ff4d4d'; ctx.lineWidth = 2.5 * s;
+      ctx.beginPath(); ctx.arc(b[1], b[2], 9 * s, 0, 7); ctx.stroke();
+    }
+  }
+  modelHud(f, fc);
+}
+function modelHud(f, fc) {
+  const live = R.preds.filter(pr => pr.t <= f.t && f.t <= pr.end + 100);
+  const lines = [];
+  if (fc) lines.push({ text: `fire model: ${fc.n - fc.bad.length}/${fc.n} exact`, bad: fc.bad.length > 0 });
+  for (const pr of live) {
+    const k = KINDS[(R.frames.find(fr => fr.t >= pr.t)?.proj.find(q => q[0] === pr.id) || [])[4]];
+    lines.push({ text: `${k ? k[0] : 'projectile'}: ${pr.diverge ? 'model off after ' + pr.diverge.k + ' frames' : 'model exact'}`, bad: !!pr.diverge });
+  }
+  if (!lines.length) return;
+  ctx.save(); ctx.scale(U * 0.9, U * 0.9);
+  ctx.font = `13px ${FONT}`;
+  const w = Math.max(...lines.map(l => ctx.measureText(l.text).width)) + 20, h = lines.length * 18 + 10, y0 = cv.height / (U * 0.9) - h - 8;
+  ctx.fillStyle = 'rgba(14,16,19,0.72)'; ctx.beginPath(); ctx.roundRect(8, y0, w, h, 8); ctx.fill();
+  ctx.textAlign = 'left';
+  lines.forEach((l, k) => { ctx.fillStyle = l.bad ? '#ff8a80' : '#9fe0a8'; ctx.fillText(l.text, 18, y0 + 22 + k * 18); });
+  ctx.restore();
+}
+
 // rendered sprite id -> [name, colour, shape, size]
 const KINDS = {
   48: ['bazooka', '#ffb347', 'rocket', 7], 59: ['homing missile', '#ff6b6b', 'rocket', 7], 49: ['magic bullet', '#c78bff', 'rocket', 6],
@@ -333,6 +395,7 @@ addEventListener('keydown', e => {
   else if (e.code === 'ArrowRight') e.shiftKey ? jumpTurn(1) : step(25);
   else if (e.code === 'Home') pos = 0;
   else if (e.code === 'End') pos = R.frames.length - 1;
+  else if (e.code === 'KeyM') showModel = !showModel;
 });
 // drag and drop anywhere
 addEventListener('dragover', e => { e.preventDefault(); $('drop').classList.add('over'); $('drop').style.display = 'flex'; });

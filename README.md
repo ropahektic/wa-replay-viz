@@ -7,6 +7,9 @@ crates.
 
 **https://ropahektic.github.io/wa-replay-viz/**
 
+- Model layer (M): each projectile's path as our model predicts it at spawn (dashed: blue = matches WA to the
+  end, red = leaves it, with a red cross where), and fire checked against our fire model every frame (red rings =
+  fires the model got wrong; panel bottom-left). Traces made with the current converter include it.
 - Space: play / pause · ← →: 0.5 s · Shift+← →: previous / next turn · Home / End
 - Speed 0.5× to 16×, timeline with turn marks
 
