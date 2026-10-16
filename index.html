@@ -40,7 +40,7 @@
 <div id="drop">
   <b>WA REPLAY VIEWER</b>
   <button class="open" id="openBig">Open a .watrace</button>
-  <small>or drop it here · a .watrace is made from a .WAgame replay with the wa-trace converter</small>
+  <small>or drop it here · .WAgame replays can't be opened directly yet: convert them to .watrace first (wa-trace.bat)</small>
   <div id="msg"></div>
 </div>
 <div id="bar" hidden>
@@ -72,6 +72,11 @@ let pos = 0, playing = false, last = 0, U = 1;
 
 // ---------------------------------------------------------------- loading
 async function load(file) {
+  if (/\.wagame$/i.test(file.name)) {
+    $('msg').textContent = 'that is a .WAgame replay: convert it to a .watrace first (drop it on wa-trace.bat), then open the .watrace here';
+    $('drop').style.display = 'flex';
+    return;
+  }
   $('msg').textContent = 'reading…';
   try {
     const head = new Uint8Array(await file.slice(0, 2).arrayBuffer());
