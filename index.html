@@ -83,7 +83,7 @@ async function load(file) {
     let stream = file.stream();
     if (head[0] === 0x1f && head[1] === 0x8b) stream = stream.pipeThrough(new DecompressionStream('gzip'));
     const reader = stream.pipeThrough(new TextDecoderStream()).getReader();
-    const r = { meta: {}, frames: [], maps: [], turns: [], preds: [], fchecks: new Map(), shots: [], hits: [], balls: new Map(), acount: new Map(), abad: new Map(), gas: new Map() };
+    const r = { meta: {}, frames: [], maps: [], turns: [], preds: [], fchecks: new Map(), shots: [], hits: [], balls: new Map(), acount: new Map(), abad: new Map(), gas: new Map(), pcount: new Map(), mcount: new Map(), xbad: new Map() };
     let rest = '';
     const line = l => {
       if (!l) return;
@@ -99,6 +99,9 @@ async function load(file) {
       else if (m.type === 'acount') r.acount.set(m.t, m);
       else if (m.type === 'acheck' && !m.ok) (r.abad.get(m.t) || r.abad.set(m.t, []).get(m.t)).push(m);
       else if (m.type === 'gcount') r.gas.set(m.t, m);
+      else if (m.type === 'pcount') r.pcount.set(m.t, m);
+      else if (m.type === 'mcount') r.mcount.set(m.t, m);
+      else if ((m.type === 'pcheck' || m.type === 'dcheck' || (m.type === 'mcheck' && m.x != null)) && !m.ok) (r.xbad.get(m.t) || r.xbad.set(m.t, []).get(m.t)).push(m);
     };
     try {
       for (;;) {
@@ -353,6 +356,12 @@ function model(f, i) {
       ctx.beginPath(); ctx.arc(b[1], b[2], 9 * s, 0, 7); ctx.stroke();
     }
   }
+  // animal physics / update / dig misses (px position)
+  for (const t of [f.t, f.t - 1]) for (const m of (R.xbad.get(t) || [])) {
+    const x = m.x != null ? m.x : m.wa[0] / 65536, y = m.y != null ? m.y : m.wa[1] / 65536;
+    ctx.strokeStyle = '#ff4d4d'; ctx.lineWidth = 2.5 * s;
+    ctx.beginPath(); ctx.arc(x, y, 12 * s, 0, 7); ctx.stroke();
+  }
   // walking animals the model got wrong (WA's position)
   for (const t of [f.t, f.t - 1]) for (const m of (R.abad.get(t) || [])) {
     ctx.strokeStyle = '#ff4d4d'; ctx.lineWidth = 2.5 * s;
@@ -366,6 +375,10 @@ function modelHud(f, fc) {
   if (fc) lines.push({ text: `fire model: ${fc.n - fc.bad.length}/${fc.n} exact`, bad: fc.bad.length > 0 });
   const ac = R.acount.get(f.t) || R.acount.get(f.t - 1);
   if (ac) lines.push({ text: `walking animals: ${ac.n - ac.bad}/${ac.n} exact`, bad: ac.bad > 0 });
+  const pc = R.pcount.get(f.t) || R.pcount.get(f.t - 1);
+  if (pc) lines.push({ text: `animal physics: ${pc.n - pc.bad}/${pc.n} exact`, bad: pc.bad > 0 });
+  const mc = R.mcount.get(f.t) || R.mcount.get(f.t - 1);
+  if (mc) lines.push({ text: `animal fuse / detonation: ${mc.n - mc.bad}/${mc.n} exact`, bad: mc.bad > 0 });
   const gc = R.gas.get(f.t) || R.gas.get(f.t - 1);
   if (gc) lines.push({ text: `skunk gas: ${gc.n - gc.bad}/${gc.n} exact`, bad: gc.bad > 0 });
   for (const pr of live) {
