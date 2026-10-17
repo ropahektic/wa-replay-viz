@@ -83,7 +83,7 @@ async function load(file) {
     let stream = file.stream();
     if (head[0] === 0x1f && head[1] === 0x8b) stream = stream.pipeThrough(new DecompressionStream('gzip'));
     const reader = stream.pipeThrough(new TextDecoderStream()).getReader();
-    const r = { meta: {}, frames: [], maps: [], turns: [], preds: [], fchecks: new Map(), shots: [], hits: [], balls: new Map(), acount: new Map(), abad: new Map(), gas: new Map(), pcount: new Map(), mcount: new Map(), xbad: new Map(), ahits: [], acheck: new Map() };
+    const r = { meta: {}, frames: [], maps: [], turns: [], preds: [], fchecks: new Map(), shots: [], hits: [], balls: new Map(), acount: new Map(), abad: new Map(), gas: new Map(), pcount: new Map(), mcount: new Map(), xbad: new Map(), ahits: [], acheck: new Map(), wchecks: [] };
     let rest = '';
     const line = l => {
       if (!l) return;
@@ -101,6 +101,7 @@ async function load(file) {
       else if (m.type === 'gcount') r.gas.set(m.t, m);
       else if (m.type === 'pcount') r.pcount.set(m.t, m);
       else if (m.type === 'ahit') r.ahits.push(m);
+      else if (m.type === 'gcheckshot' || m.type === 'mcheckhit') r.wchecks.push(m);
       else if (m.type === 'archeck') { (r.acheck.get(m.t) || r.acheck.set(m.t, []).get(m.t)).push(m); if (!m.ok) (r.xbad.get(m.t) || r.xbad.set(m.t, []).get(m.t)).push(m); }
       else if (m.type === 'mcount') r.mcount.set(m.t, m);
       else if ((m.type === 'pcheck' || m.type === 'dcheck' || (m.type === 'mcheck' && m.x != null)) && !m.ok) (r.xbad.get(m.t) || r.xbad.set(m.t, []).get(m.t)).push(m);
@@ -398,6 +399,14 @@ function modelHud(f, fc) {
   if (fc) lines.push({ text: `fire model: ${fc.n - fc.bad.length}/${fc.n} exact`, bad: fc.bad.length > 0 });
   const ac = R.acount.get(f.t) || R.acount.get(f.t - 1);
   if (ac) lines.push({ text: `walking animals: ${ac.n - ac.bad}/${ac.n} exact`, bad: ac.bad > 0 });
+  // gun / melee checks of the last 30 frames
+  const wc = R.wchecks.filter(m => m.t <= f.t && f.t - m.t <= 30);
+  if (wc.length) {
+    const nm = { 11: 'shotgun', 12: 'handgun', 13: 'uzi', 14: 'minigun', 16: 'fire punch', 35: 'baseball bat' };
+    const by = new Map();
+    for (const m of wc) { const k = nm[m.weapon] || 'weapon ' + m.weapon; const v = by.get(k) || [0, 0]; v[0] += m.ok ? 1 : 0; v[1]++; by.set(k, v); }
+    for (const [k, [ok, n]] of by) lines.push({ text: `${k} model: ${ok}/${n} exact`, bad: ok < n });
+  }
   const pc = R.pcount.get(f.t) || R.pcount.get(f.t - 1);
   if (pc) lines.push({ text: `physics (animals, arrows): ${pc.n - pc.bad}/${pc.n} exact`, bad: pc.bad > 0 });
   const mc = R.mcount.get(f.t) || R.mcount.get(f.t - 1);
