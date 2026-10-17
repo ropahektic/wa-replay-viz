@@ -83,7 +83,7 @@ async function load(file) {
     let stream = file.stream();
     if (head[0] === 0x1f && head[1] === 0x8b) stream = stream.pipeThrough(new DecompressionStream('gzip'));
     const reader = stream.pipeThrough(new TextDecoderStream()).getReader();
-    const r = { meta: {}, frames: [], maps: [], turns: [], preds: [], fchecks: new Map(), shots: [], hits: [], balls: new Map(), acount: new Map(), abad: new Map(), gas: new Map(), pcount: new Map(), mcount: new Map(), xbad: new Map() };
+    const r = { meta: {}, frames: [], maps: [], turns: [], preds: [], fchecks: new Map(), shots: [], hits: [], balls: new Map(), acount: new Map(), abad: new Map(), gas: new Map(), pcount: new Map(), mcount: new Map(), xbad: new Map(), ahits: [], acheck: new Map() };
     let rest = '';
     const line = l => {
       if (!l) return;
@@ -100,6 +100,8 @@ async function load(file) {
       else if (m.type === 'acheck' && !m.ok) (r.abad.get(m.t) || r.abad.set(m.t, []).get(m.t)).push(m);
       else if (m.type === 'gcount') r.gas.set(m.t, m);
       else if (m.type === 'pcount') r.pcount.set(m.t, m);
+      else if (m.type === 'ahit') r.ahits.push(m);
+      else if (m.type === 'archeck') { (r.acheck.get(m.t) || r.acheck.set(m.t, []).get(m.t)).push(m); if (!m.ok) (r.xbad.get(m.t) || r.xbad.set(m.t, []).get(m.t)).push(m); }
       else if (m.type === 'mcount') r.mcount.set(m.t, m);
       else if ((m.type === 'pcheck' || m.type === 'dcheck' || (m.type === 'mcheck' && m.x != null)) && !m.ok) (r.xbad.get(m.t) || r.xbad.set(m.t, []).get(m.t)).push(m);
     };
@@ -231,6 +233,25 @@ function draw() {
       ctx.fillStyle = teamColor(team); ctx.fillText(h, x, y - (on ? 22 : 15) * s);
     }
   }
+  // Longbow arrows (other entities, vtable 0x664198): a shaft along the motion
+  for (const o of (f.others || [])) {
+    if (o[3] !== 0x664198) continue;
+    const prev = i > 0 && (R.frames[i - 1].others || []).find(q => q[0] === o[0]);
+    let dx = 1, dy = 0;
+    if (prev && (prev[1] !== o[1] || prev[2] !== o[2])) { dx = o[1] - prev[1]; dy = o[2] - prev[2]; }
+    const k = Math.hypot(dx, dy) || 1, L = 9 * S();
+    ctx.strokeStyle = '#e8d9a8'; ctx.lineWidth = 2 * S();
+    ctx.beginPath(); ctx.moveTo(o[1] - dx / k * L, o[2] - dy / k * L); ctx.lineTo(o[1], o[2]); ctx.stroke();
+    ctx.fillStyle = '#ffffff'; ctx.beginPath(); ctx.arc(o[1], o[2], 1.8 * S(), 0, 7); ctx.fill();
+  }
+  // arrow hits: a flash, the push it gave (velocity / 4), what it hit
+  for (const h of R.ahits) {
+    if (h.t > f.t || f.t - h.t > 25) continue;
+    const a = 1 - (f.t - h.t) / 25, x = h.x / 65536, y = h.y / 65536;
+    ctx.strokeStyle = `rgba(255,220,140,${a})`; ctx.lineWidth = 2 * S();
+    ctx.beginPath(); ctx.arc(x, y, 6 * S(), 0, 7); ctx.stroke();
+    if (h.partner !== 'terrain') { ctx.beginPath(); ctx.moveTo(x, y); ctx.lineTo(x + h.push[0] / 65536 * 6, y + h.push[1] / 65536 * 6); ctx.stroke(); }
+  }
   // fires: size and glow by strength; drum fire amber, petrol red
   for (const [, x, y, st, petrol] of (f.fires || [])) {
     const k = st / 65535, flick = 0.85 + 0.15 * Math.sin(performance.now() / 70 + x * 1.7);
@@ -257,6 +278,8 @@ function draw() {
   if (f.fires && f.fires.length) seen.add(`fire ×${f.fires.length}`);
   if (gas && gas.c.length) seen.add(`skunk gas ×${gas.c.length}`);
   for (const n of strikes(f)) seen.add(n);
+  if ((f.others || []).some(o => o[3] === 0x664198)) seen.add('arrow');
+  for (const h of R.ahits) if (h.t <= f.t && f.t - h.t <= 25) seen.add(`arrow hit (${h.partner})`);
   // Dragon Ball fireballs (logged every frame; the ents every 2nd)
   for (const t of [f.t, f.t + 1]) for (const pr of R.preds) {
     if (!pr.ball) continue;
@@ -376,7 +399,7 @@ function modelHud(f, fc) {
   const ac = R.acount.get(f.t) || R.acount.get(f.t - 1);
   if (ac) lines.push({ text: `walking animals: ${ac.n - ac.bad}/${ac.n} exact`, bad: ac.bad > 0 });
   const pc = R.pcount.get(f.t) || R.pcount.get(f.t - 1);
-  if (pc) lines.push({ text: `animal physics: ${pc.n - pc.bad}/${pc.n} exact`, bad: pc.bad > 0 });
+  if (pc) lines.push({ text: `physics (animals, arrows): ${pc.n - pc.bad}/${pc.n} exact`, bad: pc.bad > 0 });
   const mc = R.mcount.get(f.t) || R.mcount.get(f.t - 1);
   if (mc) lines.push({ text: `animal fuse / detonation: ${mc.n - mc.bad}/${mc.n} exact`, bad: mc.bad > 0 });
   const gc = R.gas.get(f.t) || R.gas.get(f.t - 1);
