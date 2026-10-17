@@ -83,7 +83,7 @@ async function load(file) {
     let stream = file.stream();
     if (head[0] === 0x1f && head[1] === 0x8b) stream = stream.pipeThrough(new DecompressionStream('gzip'));
     const reader = stream.pipeThrough(new TextDecoderStream()).getReader();
-    const r = { meta: {}, frames: [], maps: [], turns: [], preds: [], fchecks: new Map(), shots: [], hits: [], balls: new Map() };
+    const r = { meta: {}, frames: [], maps: [], turns: [], preds: [], fchecks: new Map(), shots: [], hits: [], balls: new Map(), acount: new Map(), abad: new Map(), gas: new Map() };
     let rest = '';
     const line = l => {
       if (!l) return;
@@ -96,6 +96,9 @@ async function load(file) {
       else if (m.type === 'shot') r.shots.push(m);
       else if (m.type === 'hit') r.hits.push(m);
       else if (m.type === 'ball') r.balls.set(m.id + ':' + m.t, m);
+      else if (m.type === 'acount') r.acount.set(m.t, m);
+      else if (m.type === 'acheck' && !m.ok) (r.abad.get(m.t) || r.abad.set(m.t, []).get(m.t)).push(m);
+      else if (m.type === 'gcount') r.gas.set(m.t, m);
     };
     try {
       for (;;) {
@@ -233,6 +236,14 @@ function draw() {
     ctx.fillStyle = '#ffe9a8' + hx(120 + 120 * k);
     ctx.beginPath(); ctx.arc(x, y, (1 + 1.5 * k) * s, 0, 7); ctx.fill();
   }
+  // skunk gas (logged every frame; the ents every 2nd): a cloud per entity, sized by its age
+  const gas = R.gas.get(f.t) || R.gas.get(f.t - 1);
+  if (gas && gas.c.length) {
+    for (const [x, y, reach] of gas.c) {
+      const r = (4 + reach * 0.35) * S();
+      ctx.fillStyle = 'rgba(150,220,90,0.16)'; ctx.beginPath(); ctx.arc(x, y, r, 0, 7); ctx.fill();
+    }
+  }
   // projectiles by kind (the rendered sprite: cluster pieces differ from their shell)
   const seen = new Set();
   for (const q of f.proj) {
@@ -241,6 +252,7 @@ function draw() {
     shape(x, y, kind, q, i);
   }
   if (f.fires && f.fires.length) seen.add(`fire ×${f.fires.length}`);
+  if (gas && gas.c.length) seen.add(`skunk gas ×${gas.c.length}`);
   for (const n of strikes(f)) seen.add(n);
   // Dragon Ball fireballs (logged every frame; the ents every 2nd)
   for (const t of [f.t, f.t + 1]) for (const pr of R.preds) {
@@ -341,12 +353,21 @@ function model(f, i) {
       ctx.beginPath(); ctx.arc(b[1], b[2], 9 * s, 0, 7); ctx.stroke();
     }
   }
+  // walking animals the model got wrong (WA's position)
+  for (const t of [f.t, f.t - 1]) for (const m of (R.abad.get(t) || [])) {
+    ctx.strokeStyle = '#ff4d4d'; ctx.lineWidth = 2.5 * s;
+    ctx.beginPath(); ctx.arc(m.wa[0] / 65536, m.wa[1] / 65536, 10 * s, 0, 7); ctx.stroke();
+  }
   modelHud(f, fc);
 }
 function modelHud(f, fc) {
   const live = R.preds.filter(pr => pr.t <= f.t && f.t <= pr.end + 100);
   const lines = [];
   if (fc) lines.push({ text: `fire model: ${fc.n - fc.bad.length}/${fc.n} exact`, bad: fc.bad.length > 0 });
+  const ac = R.acount.get(f.t) || R.acount.get(f.t - 1);
+  if (ac) lines.push({ text: `walking animals: ${ac.n - ac.bad}/${ac.n} exact`, bad: ac.bad > 0 });
+  const gc = R.gas.get(f.t) || R.gas.get(f.t - 1);
+  if (gc) lines.push({ text: `skunk gas: ${gc.n - gc.bad}/${gc.n} exact`, bad: gc.bad > 0 });
   for (const pr of live) {
     const k = pr.ball ? ['dragon ball'] : KINDS[(R.frames.find(fr => fr.t >= pr.t)?.proj.find(q => q[0] === pr.id) || [])[4]];
     lines.push({ text: `${k ? k[0] : 'projectile'}: ${pr.diverge ? 'model off after ' + pr.diverge.k + ' frames' : pr.water ? 'model exact to the water' : 'model exact'}`, bad: !!pr.diverge });
